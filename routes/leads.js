@@ -28,6 +28,12 @@ router.post('/', authenticateToken, (req, res) => {
     infoUsado, entrega, fecha, fuente, vendedor, notas
   } = req.body;
 
+  // 👇 LOG PARA DEBUG
+  console.log('📥 Lead recibido del bot:');
+  console.log('   - Nombre:', nombre);
+  console.log('   - Vendedor ID:', vendedor);
+  console.log('   - Fuente:', fuente);
+
   if (!nombre || !telefono || !modelo) {
     return res.status(400).json({ error: 'Nombre, teléfono y modelo son obligatorios' });
   }
@@ -37,16 +43,28 @@ router.post('/', authenticateToken, (req, res) => {
     INSERT INTO leads (
       nombre, telefono, email, modelo, formaPago, presupuesto,
       infoUsado, entrega, fecha, fuente, vendedor, notas, estado
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'nuevo')
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `, [
-    nombre, telefono, email || null, modelo, formaPago || null, presupuesto || null,
-    infoUsado || null, entrega ? 1 : 0, fecha || null, fuente || 'otro', 
-    vendedor || null, notas || ''
+    nombre, 
+    telefono, 
+    email || null, 
+    modelo, 
+    formaPago || null, 
+    presupuesto || null,
+    infoUsado || null, 
+    entrega ? 1 : 0, 
+    fecha || null, 
+    fuente || 'otro', 
+    vendedor || null,  // 👈 ASEGURARSE QUE SE GUARDE
+    notas || '',
+    'nuevo'  // 👈 MOVIDO AL ARRAY DE PARÁMETROS
   ], function(err) {
     if (err) {
       console.error('Database error:', err);
       return res.status(500).json({ error: 'Error al crear lead' });
     }
+
+    console.log('✅ Lead guardado con ID:', this.lastID);
 
     // Agregar al historial
     db.run(
@@ -65,6 +83,10 @@ router.post('/', authenticateToken, (req, res) => {
         console.error('Database error:', err);
         return res.status(500).json({ error: 'Error al obtener lead creado' });
       }
+      
+      // 👇 LOG PARA VERIFICAR
+      console.log('📤 Lead retornado - Vendedor:', lead.vendedor, '-', lead.vendedorNombre);
+      
       res.status(201).json(lead);
     });
   });
