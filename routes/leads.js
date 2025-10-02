@@ -8,29 +8,40 @@ const router = express.Router();
 async function getAccessibleUserIds(userId) {
   try {
     const pool = getDB();
-    const usersResult = await pool.query('SELECT id, role, "reportsTo" FROM users');
+    const usersResult = await pool.query('SELECT id, role, "reportsTo" as "reportsTo" FROM users');
     const users = usersResult.rows;
+    
+    console.log('📊 Usuarios cargados:', users.length);
+    console.log('📋 Ejemplo primer usuario:', users[0]);
     
     const currentUserResult = await pool.query('SELECT role FROM users WHERE id = $1', [userId]);
     if (currentUserResult.rows.length === 0) return [userId];
     
     const userRole = currentUserResult.rows[0].role;
     
+    console.log(`👤 Usuario ${userId} tiene rol: ${userRole}`);
+    
     // Owner y Director ven todo
     if (['owner', 'director'].includes(userRole)) {
-      return users.map(u => u.id);
+      const allIds = users.map(u => u.id);
+      console.log(`🌐 Usuario ${userId} (${userRole}) ve TODOS los IDs:`, allIds);
+      return allIds;
     }
     
     // Construir árbol de jerarquía
     const childrenMap = new Map();
     users.forEach(u => childrenMap.set(u.id, []));
     users.forEach(u => {
-      if (u.reportsTo) {
-        const children = childrenMap.get(u.reportsTo) || [];
+      // PostgreSQL puede devolver el campo como reportsTo o reportsto
+      const reportsToId = u.reportsTo || u.reportsto;
+      if (reportsToId) {
+        const children = childrenMap.get(reportsToId) || [];
         children.push(u.id);
-        childrenMap.set(u.reportsTo, children);
+        childrenMap.set(reportsToId, children);
       }
     });
+    
+    console.log('🌳 Árbol de jerarquía:', JSON.stringify(Object.fromEntries(childrenMap)));
     
     // Obtener todos los descendientes
     const getDescendants = (id) => {
@@ -45,11 +56,12 @@ async function getAccessibleUserIds(userId) {
       return result;
     };
     
-    const accessibleIds = [userId, ...getDescendants(userId)];
-    console.log(`Usuario ${userId} puede ver IDs:`, accessibleIds);
+    const descendants = getDescendants(userId);
+    const accessibleIds = [userId, ...descendants];
+    console.log(`✅ Usuario ${userId} puede ver IDs:`, accessibleIds);
     return accessibleIds;
   } catch (error) {
-    console.error('Error getAccessibleUserIds:', error);
+    console.error('❌ Error getAccessibleUserIds:', error);
     return [userId];
   }
 }
@@ -58,7 +70,8 @@ async function getAccessibleUserIds(userId) {
 router.get('/', authenticateToken, async (req, res) => {
   try {
     const pool = getDB();
-    const accessibleUserIds = await getAccessibleUserIds(req.user.userId || req.user.id);
+    const userId = req.user.userId || req.user.id;
+    const accessibleUserIds = await getAccessibleUserIds(userId);
     
     const result = await pool.query(`
       SELECT l.*, u.name as "vendedorNombre" 
@@ -67,12 +80,14 @@ router.get('/', authenticateToken, async (req, res) => {
       ORDER BY l."createdAt" DESC
     `);
     
+    console.log(`📦 Total de leads en BD: ${result.rows.length}`);
+    
     // Filtrar leads por acceso
     const filteredLeads = result.rows.filter(lead => 
       !lead.vendedor || accessibleUserIds.includes(lead.vendedor)
     );
     
-    console.log(`Leads filtrados para usuario ${req.user.userId || req.user.id}: ${filteredLeads.length} de ${result.rows.length}`);
+    console.log(`✅ Leads filtrados para usuario ${userId}: ${filteredLeads.length} de ${result.rows.length}`);
     
     res.json(filteredLeads);
   } catch (err) {
@@ -91,7 +106,7 @@ router.post('/', authenticateToken, async (req, res) => {
   // Soportar tanto 'assigned_to' como 'vendedor'
   const finalVendedor = assigned_to !== undefined ? assigned_to : vendedor;
 
-  console.log('Lead recibido:');
+  console.log('📝 Lead recibido:');
   console.log('   - Nombre:', nombre);
   console.log('   - Vendedor ID:', finalVendedor);
   console.log('   - Fuente:', fuente);
@@ -126,7 +141,7 @@ router.post('/', authenticateToken, async (req, res) => {
     ]);
 
     const leadId = leadResult.rows[0].id;
-    console.log('Lead guardado con ID:', leadId);
+    console.log('✅ Lead guardado con ID:', leadId);
 
     // Agregar al historial
     await client.query(
@@ -144,7 +159,7 @@ router.post('/', authenticateToken, async (req, res) => {
 
     await client.query('COMMIT');
 
-    console.log('Lead retornado - Vendedor:', createdLead.rows[0].vendedor, '-', createdLead.rows[0].vendedorNombre);
+    console.log('📤 Lead retornado - Vendedor:', createdLead.rows[0].vendedor, '-', createdLead.rows[0].vendedorNombre);
     
     res.status(201).json(createdLead.rows[0]);
   } catch (err) {
