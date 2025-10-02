@@ -8,7 +8,7 @@ const router = express.Router();
 async function getAccessibleUserIds(userId) {
   try {
     const pool = getDB();
-    const usersResult = await pool.query('SELECT id, role, reportsto FROM users');
+    const usersResult = await pool.query('SELECT id, role, "reportsTo" FROM users');
     const users = usersResult.rows;
     
     const currentUserResult = await pool.query('SELECT role FROM users WHERE id = $1', [userId]);
@@ -25,10 +25,10 @@ async function getAccessibleUserIds(userId) {
     const childrenMap = new Map();
     users.forEach(u => childrenMap.set(u.id, []));
     users.forEach(u => {
-      if (u.reportsto) {
-        const children = childrenMap.get(u.reportsto) || [];
+      if (u.reportsTo) {
+        const children = childrenMap.get(u.reportsTo) || [];
         children.push(u.id);
-        childrenMap.set(u.reportsto, children);
+        childrenMap.set(u.reportsTo, children);
       }
     });
     
@@ -46,6 +46,7 @@ async function getAccessibleUserIds(userId) {
     };
     
     const accessibleIds = [userId, ...getDescendants(userId)];
+    console.log(`Usuario ${userId} puede ver IDs:`, accessibleIds);
     return accessibleIds;
   } catch (error) {
     console.error('Error getAccessibleUserIds:', error);
@@ -71,6 +72,8 @@ router.get('/', authenticateToken, async (req, res) => {
       !lead.vendedor || accessibleUserIds.includes(lead.vendedor)
     );
     
+    console.log(`Leads filtrados para usuario ${req.user.userId || req.user.id}: ${filteredLeads.length} de ${result.rows.length}`);
+    
     res.json(filteredLeads);
   } catch (err) {
     console.error('Database error:', err);
@@ -86,9 +89,9 @@ router.post('/', authenticateToken, async (req, res) => {
   } = req.body;
 
   // Soportar tanto 'assigned_to' como 'vendedor'
-  const finalVendedor = assigned_to || vendedor;
+  const finalVendedor = assigned_to !== undefined ? assigned_to : vendedor;
 
-  console.log('📥 Lead recibido:');
+  console.log('Lead recibido:');
   console.log('   - Nombre:', nombre);
   console.log('   - Vendedor ID:', finalVendedor);
   console.log('   - Fuente:', fuente);
@@ -123,7 +126,7 @@ router.post('/', authenticateToken, async (req, res) => {
     ]);
 
     const leadId = leadResult.rows[0].id;
-    console.log('✅ Lead guardado con ID:', leadId);
+    console.log('Lead guardado con ID:', leadId);
 
     // Agregar al historial
     await client.query(
@@ -141,7 +144,7 @@ router.post('/', authenticateToken, async (req, res) => {
 
     await client.query('COMMIT');
 
-    console.log('📤 Lead retornado - Vendedor:', createdLead.rows[0].vendedor, '-', createdLead.rows[0].vendedorNombre);
+    console.log('Lead retornado - Vendedor:', createdLead.rows[0].vendedor, '-', createdLead.rows[0].vendedorNombre);
     
     res.status(201).json(createdLead.rows[0]);
   } catch (err) {
