@@ -10,6 +10,8 @@ router.post('/login', async (req, res) => {
   try {
     const { email, password, allowInactiveUsers } = req.body;
     
+    console.log('Intento de login para:', email);
+    
     if (!email || !password) {
       return res.status(400).json({ error: 'Email y contraseña son obligatorios' });
     }
@@ -27,25 +29,33 @@ router.post('/login', async (req, res) => {
     const user = result.rows[0];
     
     if (!user) {
+      console.log('Usuario no encontrado o inactivo:', email);
       return res.status(401).json({ error: 'Credenciales incorrectas' });
     }
+
+    console.log('Usuario encontrado:', { id: user.id, name: user.name, role: user.role, active: user.active });
+
+    // Considera tanto booleanos como números para active
+    const isActive = user.active === true || user.active === 1 || user.active === '1';
 
     // Permitir login de supervisores y vendedores aunque estén inactivos
     const canLoginInactive = allowInactiveUsers || ['vendedor', 'supervisor'].includes(user.role);
     
-    if (!user.active && !canLoginInactive) {
+    if (!isActive && !canLoginInactive) {
+      console.log('Usuario inactivo y sin permisos para login inactivo');
       return res.status(401).json({ error: 'Usuario inactivo. Contacta al administrador.' });
     }
 
     const isValidPassword = await bcrypt.compare(password, user.password);
     if (!isValidPassword) {
+      console.log('Contraseña incorrecta para:', email);
       return res.status(401).json({ error: 'Credenciales incorrectas' });
     }
 
     const token = jwt.sign(
       { 
-        userId: user.id,  // Usar userId para consistencia
-        id: user.id,      // Compatibilidad
+        userId: user.id,
+        id: user.id,
         email: user.email, 
         role: user.role,
         name: user.name 
@@ -56,6 +66,8 @@ router.post('/login', async (req, res) => {
 
     // No enviar password en la respuesta
     delete user.password;
+
+    console.log('Login exitoso para:', email);
 
     res.json({
       ok: true,
