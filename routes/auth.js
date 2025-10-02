@@ -66,7 +66,7 @@ router.post('/login', async (req, res) => {
         email: user.email,
         role: user.role,
         active: user.active,
-        reportsTo: user.reportsto || null  // PostgreSQL usa lowercase
+        reportsTo: user.reportsTo || null
       }
     });
   } catch (error) {
@@ -78,6 +78,27 @@ router.post('/login', async (req, res) => {
 // Logout
 router.post('/logout', (req, res) => {
   res.json({ ok: true, message: 'Sesión cerrada correctamente' });
+});
+
+// TEMPORAL: Endpoint para debug - ELIMINAR EN PRODUCCIÓN
+router.get('/debug/user/:email', async (req, res) => {
+  try {
+    const { email } = req.params;
+    const pool = getDB();
+    const result = await pool.query(
+      'SELECT id, name, email, role, active, "reportsTo" FROM users WHERE email = $1',
+      [email]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.json({ error: 'Usuario no encontrado' });
+    }
+    
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('Debug error:', error);
+    res.status(500).json({ error: error.message });
+  }
 });
 
 module.exports = router;
