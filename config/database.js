@@ -5,6 +5,7 @@ let pool;
 const initDatabase = async () => {
   try {
     console.log('Conectando a MySQL...');
+    console.log('Host:', process.env.MYSQLHOST);
     
     pool = mysql.createPool({
       host: process.env.MYSQLHOST,
@@ -18,7 +19,8 @@ const initDatabase = async () => {
     });
 
     await pool.query('SELECT 1');
-    console.log('✅ MySQL conectado correctamente');
+    console.log('✅ Conectado a MySQL exitosamente');
+    return pool;
   } catch (error) {
     console.error('❌ Error conectando a MySQL:', error);
     throw error;
@@ -27,7 +29,7 @@ const initDatabase = async () => {
 
 const getDB = () => {
   if (!pool) {
-    throw new Error('Database no inicializada');
+    throw new Error('Database not initialized');
   }
   return pool;
 };
