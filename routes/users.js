@@ -5,16 +5,16 @@ const { authenticateToken, authorizeRoles } = require('../middleware/auth');
 
 const router = express.Router();
 
-// Obtener todos los usuarios (solo para roles autorizados)
+// Obtener todos los usuarios
 router.get('/', authenticateToken, authorizeRoles('owner', 'director', 'gerente'), async (req, res) => {
   try {
     const pool = getDB();
-    const result = await pool.query(`
-      SELECT id, name, email, role, "reportsTo", active, "createdAt" 
+    const [rows] = await pool.query(`
+      SELECT id, name, email, role, reportsTo, active, createdAt 
       FROM users 
       ORDER BY role, name
     `);
-    res.json(result.rows);
+    res.json(rows);
   } catch (err) {
     console.error('Database error:', err);
     res.status(500).json({ error: 'Error al obtener usuarios' });
@@ -30,18 +30,26 @@ router.post('/', authenticateToken, authorizeRoles('owner', 'director', 'gerente
       return res.status(400).json({ error: 'Todos los campos obligatorios deben completarse' });
     }
 
+    if (password.length < 6) {
+      return res.status(400).json({ error: 'La contraseña debe tener al menos 6 caracteres' });
+    }
+
     const hashedPassword = await bcrypt.hash(password, 10);
     const pool = getDB();
 
-    const result = await pool.query(`
-      INSERT INTO users (name, email, password, role, "reportsTo", active)
-      VALUES ($1, $2, $3, $4, $5, $6)
-      RETURNING id, name, email, role, "reportsTo", active
+    const [result] = await pool.query(`
+      INSERT INTO users (name, email, password, role, reportsTo, active)
+      VALUES (?, ?, ?, ?, ?, ?)
     `, [name, email, hashedPassword, role, reportsTo || null, active ? 1 : 0]);
 
-    res.status(201).json(result.rows[0]);
+    const [newUser] = await pool.query(
+      'SELECT id, name, email, role, reportsTo, active FROM users WHERE id = ?',
+      [result.insertId]
+    );
+
+    res.status(201).json(newUser[0]);
   } catch (error) {
-    if (error.code === '23505') { // unique_violation
+    if (error.code === 'ER_DUP_ENTRY') {
       return res.status(409).json({ error: 'El email ya está registrado' });
     }
     console.error('Create user error:', error);
@@ -57,38 +65,40 @@ router.put('/:id', authenticateToken, authorizeRoles('owner', 'director', 'geren
 
     const pool = getDB();
 
-    let query;
-    let params;
-
-    if (password) {
-      const hashedPassword = await bcrypt.hash(password, 10);
-      query = `
-        UPDATE users 
-        SET name = $1, email = $2, password = $3, role = $4, "reportsTo" = $5, 
-            active = $6, "updatedAt" = CURRENT_TIMESTAMP
-        WHERE id = $7
-        RETURNING id, name, email, role, "reportsTo", active
-      `;
-      params = [name, email, hashedPassword, role, reportsTo || null, active ? 1 : 0, id];
-    } else {
-      query = `
-        UPDATE users 
-        SET name = $1, email = $2, role = $3, "reportsTo" = $4, active = $5, 
-            "updatedAt" = CURRENT_TIMESTAMP
-        WHERE id = $6
-        RETURNING id, name, email, role, "reportsTo", active
-      `;
-      params = [name, email, role, reportsTo || null, active ? 1 : 0, id];
-    }
-
-    const result = await pool.query(query, params);
-    
-    if (result.rows.length === 0) {
+    const [existingUser] = await pool.query('SELECT * FROM users WHERE id = ?', [id]);
+    if (existingUser.length === 0) {
       return res.status(404).json({ error: 'Usuario no encontrado' });
     }
 
-    res.json(result.rows[0]);
+    if (password && password.trim()) {
+      if (password.length < 6) {
+        return res.status(400).json({ error: 'La contraseña debe tener al menos 6 caracteres' });
+      }
+
+      const hashedPassword = await bcrypt.hash(password, 10);
+      await pool.query(`
+        UPDATE users 
+        SET name = ?, email = ?, password = ?, role = ?, reportsTo = ?, active = ?
+        WHERE id = ?
+      `, [name, email, hashedPassword, role, reportsTo || null, active ? 1 : 0, id]);
+    } else {
+      await pool.query(`
+        UPDATE users 
+        SET name = ?, email = ?, role = ?, reportsTo = ?, active = ?
+        WHERE id = ?
+      `, [name, email, role, reportsTo || null, active ? 1 : 0, id]);
+    }
+
+    const [updatedUser] = await pool.query(
+      'SELECT id, name, email, role, reportsTo, active FROM users WHERE id = ?',
+      [id]
+    );
+
+    res.json(updatedUser[0]);
   } catch (error) {
+    if (error.code === 'ER_DUP_ENTRY') {
+      return res.status(409).json({ error: 'El email ya está registrado' });
+    }
     console.error('Update user error:', error);
     res.status(500).json({ error: 'Error interno del servidor' });
   }
@@ -100,7 +110,17 @@ router.delete('/:id', authenticateToken, authorizeRoles('owner'), async (req, re
   
   try {
     const pool = getDB();
-    await pool.query('DELETE FROM users WHERE id = $1', [id]);
+    
+    const [existingUser] = await pool.query('SELECT * FROM users WHERE id = ?', [id]);
+    if (existingUser.length === 0) {
+      return res.status(404).json({ error: 'Usuario no encontrado' });
+    }
+
+    if (existingUser[0].role === 'owner') {
+      return res.status(403).json({ error: 'No se puede eliminar al dueño del sistema' });
+    }
+
+    await pool.query('DELETE FROM users WHERE id = ?', [id]);
     res.json({ ok: true, message: 'Usuario eliminado correctamente' });
   } catch (err) {
     console.error('Database error:', err);
