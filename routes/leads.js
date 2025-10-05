@@ -1,6 +1,6 @@
 const express = require('express');
 const { getDB } = require('../config/database');
-const { authenticateToken } = require('../middleware/auth');
+const { authenticateToken, authorizeRoles } = require('../middleware/auth');
 
 const router = express.Router();
 
@@ -8,13 +8,13 @@ const router = express.Router();
 router.get('/', authenticateToken, async (req, res) => {
   try {
     const pool = getDB();
-    const [rows] = await pool.query(`
-      SELECT l.*, u.name as vendedorNombre 
+    const result = await pool.query(`
+      SELECT l.*, u.name as "vendedorNombre" 
       FROM leads l 
       LEFT JOIN users u ON l.vendedor = u.id 
-      ORDER BY l.createdAt DESC
+      ORDER BY l."createdAt" DESC
     `);
-    res.json(rows);
+    res.json(result.rows);
   } catch (err) {
     console.error('Database error:', err);
     res.status(500).json({ error: 'Error al obtener leads' });
@@ -33,44 +33,56 @@ router.post('/', authenticateToken, async (req, res) => {
   }
 
   const pool = getDB();
-  const connection = await pool.getConnection();
+  const client = await pool.connect();
 
   try {
-    await connection.beginTransaction();
+    await client.query('BEGIN');
 
-    const [result] = await connection.query(`
+    const leadResult = await client.query(`
       INSERT INTO leads (
-        nombre, telefono, email, modelo, formaPago, presupuesto,
-        infoUsado, entrega, fecha, fuente, vendedor, notas, estado, created_by
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        nombre, telefono, email, modelo, "formaPago", presupuesto,
+        "infoUsado", entrega, fecha, fuente, vendedor, notas, estado, created_by
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+      RETURNING id
     `, [
-      nombre, telefono, email || null, modelo, formaPago || 'Contado', presupuesto || null,
-      infoUsado || null, entrega ? 1 : 0, fecha || new Date().toISOString().split('T')[0],
-      fuente || 'otro', vendedor || null, notas || '', 'nuevo', req.user.id
+      nombre, 
+      telefono, 
+      email || null, 
+      modelo, 
+      formaPago || 'Contado', 
+      presupuesto || null,
+      infoUsado || null, 
+      entrega ? 1 : 0, 
+      fecha || new Date().toISOString().split('T')[0], 
+      fuente || 'otro', 
+      vendedor || null, 
+      notas || '', 
+      'nuevo',
+      req.user.id
     ]);
 
-    const leadId = result.insertId;
+    const leadId = leadResult.rows[0].id;
 
-    await connection.query(
-      'INSERT INTO lead_history (leadId, estado, usuario) VALUES (?, ?, ?)',
+    await client.query(
+      'INSERT INTO lead_history ("leadId", estado, usuario) VALUES ($1, $2, $3)',
       [leadId, 'nuevo', req.user.name]
     );
 
-    const [createdLead] = await connection.query(`
-      SELECT l.*, u.name as vendedorNombre 
+    const createdLead = await client.query(`
+      SELECT l.*, u.name as "vendedorNombre" 
       FROM leads l 
       LEFT JOIN users u ON l.vendedor = u.id 
-      WHERE l.id = ?
+      WHERE l.id = $1
     `, [leadId]);
 
-    await connection.commit();
-    res.status(201).json(createdLead[0]);
+    await client.query('COMMIT');
+    res.status(201).json(createdLead.rows[0]);
   } catch (err) {
-    await connection.rollback();
+    await client.query('ROLLBACK');
     console.error('Database error:', err);
     res.status(500).json({ error: 'Error al crear lead' });
   } finally {
-    connection.release();
+    client.release();
   }
 });
 
@@ -80,49 +92,52 @@ router.put('/:id', authenticateToken, async (req, res) => {
   const updateData = req.body;
 
   const pool = getDB();
-  const connection = await pool.getConnection();
+  const client = await pool.connect();
 
   try {
-    await connection.beginTransaction();
+    await client.query('BEGIN');
 
-    const [currentLead] = await connection.query('SELECT * FROM leads WHERE id = ?', [id]);
+    const currentLeadResult = await client.query('SELECT * FROM leads WHERE id = $1', [id]);
     
-    if (currentLead.length === 0) {
-      await connection.rollback();
+    if (currentLeadResult.rows.length === 0) {
+      await client.query('ROLLBACK');
       return res.status(404).json({ error: 'Lead no encontrado' });
     }
 
-    const lead = currentLead[0];
+    const currentLead = currentLeadResult.rows[0];
 
+    // Preparar valores finales (usar actuales si no se proporcionan nuevos)
     const finalData = {
-      nombre: updateData.nombre !== undefined ? updateData.nombre : lead.nombre,
-      telefono: updateData.telefono !== undefined ? updateData.telefono : lead.telefono,
-      email: updateData.email !== undefined ? updateData.email : lead.email,
-      modelo: updateData.modelo !== undefined ? updateData.modelo : lead.modelo,
-      formaPago: updateData.formaPago !== undefined ? updateData.formaPago : lead.formaPago,
-      presupuesto: updateData.presupuesto !== undefined ? updateData.presupuesto : lead.presupuesto,
-      infoUsado: updateData.infoUsado !== undefined ? updateData.infoUsado : lead.infoUsado,
-      entrega: updateData.entrega !== undefined ? (updateData.entrega ? 1 : 0) : lead.entrega,
-      fecha: updateData.fecha !== undefined ? updateData.fecha : lead.fecha,
-      fuente: updateData.fuente !== undefined ? updateData.fuente : lead.fuente,
-      vendedor: updateData.vendedor !== undefined ? updateData.vendedor : lead.vendedor,
-      notas: updateData.notas !== undefined ? updateData.notas : lead.notas,
-      estado: updateData.estado !== undefined ? updateData.estado : lead.estado
+      nombre: updateData.nombre !== undefined ? updateData.nombre : currentLead.nombre,
+      telefono: updateData.telefono !== undefined ? updateData.telefono : currentLead.telefono,
+      email: updateData.email !== undefined ? updateData.email : currentLead.email,
+      modelo: updateData.modelo !== undefined ? updateData.modelo : currentLead.modelo,
+      formaPago: updateData.formaPago !== undefined ? updateData.formaPago : currentLead.formaPago,
+      presupuesto: updateData.presupuesto !== undefined ? updateData.presupuesto : currentLead.presupuesto,
+      infoUsado: updateData.infoUsado !== undefined ? updateData.infoUsado : currentLead.infoUsado,
+      entrega: updateData.entrega !== undefined ? (updateData.entrega ? 1 : 0) : currentLead.entrega,
+      fecha: updateData.fecha !== undefined ? updateData.fecha : currentLead.fecha,
+      fuente: updateData.fuente !== undefined ? updateData.fuente : currentLead.fuente,
+      vendedor: updateData.vendedor !== undefined ? updateData.vendedor : currentLead.vendedor,
+      notas: updateData.notas !== undefined ? updateData.notas : currentLead.notas,
+      estado: updateData.estado !== undefined ? updateData.estado : currentLead.estado
     };
 
-    if (updateData.estado && lead.estado !== updateData.estado) {
-      await connection.query(
-        'INSERT INTO lead_history (leadId, estado, usuario) VALUES (?, ?, ?)',
+    // Si hay cambio de estado, agregar al historial
+    if (updateData.estado && currentLead.estado !== updateData.estado) {
+      await client.query(
+        'INSERT INTO lead_history ("leadId", estado, usuario) VALUES ($1, $2, $3)',
         [id, updateData.estado, req.user.name]
       );
     }
 
-    await connection.query(`
+    await client.query(`
       UPDATE leads SET 
-        nombre = ?, telefono = ?, email = ?, modelo = ?, formaPago = ?, 
-        presupuesto = ?, infoUsado = ?, entrega = ?, fecha = ?, 
-        fuente = ?, vendedor = ?, notas = ?, estado = ?
-      WHERE id = ?
+        nombre = $1, telefono = $2, email = $3, modelo = $4, "formaPago" = $5, 
+        presupuesto = $6, "infoUsado" = $7, entrega = $8, fecha = $9, 
+        fuente = $10, vendedor = $11, notas = $12, estado = $13, 
+        "updatedAt" = CURRENT_TIMESTAMP
+      WHERE id = $14
     `, [
       finalData.nombre, finalData.telefono, finalData.email, finalData.modelo,
       finalData.formaPago, finalData.presupuesto, finalData.infoUsado, finalData.entrega,
@@ -130,47 +145,47 @@ router.put('/:id', authenticateToken, async (req, res) => {
       finalData.estado, id
     ]);
 
-    const [updatedLead] = await connection.query(`
-      SELECT l.*, u.name as vendedorNombre 
+    const updatedLead = await client.query(`
+      SELECT l.*, u.name as "vendedorNombre" 
       FROM leads l 
       LEFT JOIN users u ON l.vendedor = u.id 
-      WHERE l.id = ?
+      WHERE l.id = $1
     `, [id]);
 
-    await connection.commit();
-    res.json(updatedLead[0]);
+    await client.query('COMMIT');
+    res.json(updatedLead.rows[0]);
   } catch (err) {
-    await connection.rollback();
+    await client.query('ROLLBACK');
     console.error('Database error:', err);
     res.status(500).json({ error: 'Error al actualizar lead' });
   } finally {
-    connection.release();
+    client.release();
   }
 });
 
-// Eliminar lead
+// Eliminar lead individual
 router.delete('/:id', authenticateToken, async (req, res) => {
   const { id } = req.params;
   const pool = getDB();
-  const connection = await pool.getConnection();
+  const client = await pool.connect();
 
   try {
-    await connection.beginTransaction();
-    await connection.query('DELETE FROM lead_history WHERE leadId = ?', [id]);
-    await connection.query('DELETE FROM leads WHERE id = ?', [id]);
-    await connection.commit();
+    await client.query('BEGIN');
+    await client.query('DELETE FROM lead_history WHERE "leadId" = $1', [id]);
+    await client.query('DELETE FROM leads WHERE id = $1', [id]);
+    await client.query('COMMIT');
     res.json({ ok: true, message: 'Lead eliminado correctamente' });
   } catch (err) {
-    await connection.rollback();
+    await client.query('ROLLBACK');
     console.error('Database error:', err);
     res.status(500).json({ error: 'Error al eliminar lead' });
   } finally {
-    connection.release();
+    client.release();
   }
 });
 
-// Borrado masivo
-router.delete('/bulk/delete-all', authenticateToken, async (req, res) => {
+// 🆕 BORRADO MASIVO - SOLO OWNER
+router.delete('/bulk/delete-all', authenticateToken, authorizeRoles('owner'), async (req, res) => {
   const { confirmPassword } = req.body;
 
   if (!confirmPassword) {
@@ -178,30 +193,35 @@ router.delete('/bulk/delete-all', authenticateToken, async (req, res) => {
   }
 
   const pool = getDB();
-  const connection = await pool.getConnection();
+  const client = await pool.connect();
 
   try {
+    // Verificar contraseña del owner
     const bcrypt = require('bcryptjs');
-    const [userResult] = await connection.query('SELECT * FROM users WHERE id = ?', [req.user.id]);
+    const userResult = await client.query('SELECT * FROM users WHERE id = $1', [req.user.id]);
     
-    if (userResult.length === 0) {
+    if (userResult.rows.length === 0) {
       return res.status(404).json({ error: 'Usuario no encontrado' });
     }
 
-    const validPassword = await bcrypt.compare(confirmPassword, userResult[0].password);
+    const validPassword = await bcrypt.compare(confirmPassword, userResult.rows[0].password);
     if (!validPassword) {
       return res.status(401).json({ error: 'Contraseña incorrecta' });
     }
 
-    await connection.beginTransaction();
+    await client.query('BEGIN');
 
-    const [countResult] = await connection.query('SELECT COUNT(*) as total FROM leads');
-    const totalLeads = parseInt(countResult[0].total);
+    // Obtener conteo antes de borrar
+    const countResult = await client.query('SELECT COUNT(*) as total FROM leads');
+    const totalLeads = parseInt(countResult.rows[0].total);
 
-    await connection.query('DELETE FROM lead_history');
-    await connection.query('DELETE FROM leads');
+    // Eliminar todo el historial primero
+    await client.query('DELETE FROM lead_history');
+    
+    // Eliminar todos los leads
+    await client.query('DELETE FROM leads');
 
-    await connection.commit();
+    await client.query('COMMIT');
 
     res.json({ 
       ok: true, 
@@ -209,24 +229,24 @@ router.delete('/bulk/delete-all', authenticateToken, async (req, res) => {
       deletedCount: totalLeads
     });
   } catch (err) {
-    await connection.rollback();
+    await client.query('ROLLBACK');
     console.error('Database error:', err);
     res.status(500).json({ error: 'Error al eliminar leads masivamente' });
   } finally {
-    connection.release();
+    client.release();
   }
 });
 
-// Historial
+// Obtener historial de un lead
 router.get('/:id/history', authenticateToken, async (req, res) => {
   const { id } = req.params;
   try {
     const pool = getDB();
-    const [rows] = await pool.query(
-      'SELECT * FROM lead_history WHERE leadId = ? ORDER BY timestamp DESC',
+    const result = await pool.query(
+      'SELECT * FROM lead_history WHERE "leadId" = $1 ORDER BY timestamp DESC',
       [id]
     );
-    res.json(rows);
+    res.json(result.rows);
   } catch (err) {
     console.error('Database error:', err);
     res.status(500).json({ error: 'Error al obtener historial' });
