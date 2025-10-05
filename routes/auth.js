@@ -21,12 +21,12 @@ router.post('/login', async (req, res) => {
     // Permitir usuarios inactivos si allowInactiveUsers es true
     const activeFilter = allowInactiveUsers ? '' : 'AND active = 1';
     
-    const result = await pool.query(
-      `SELECT * FROM users WHERE email = $1 ${activeFilter}`,
+    const [result] = await pool.query(
+      `SELECT * FROM users WHERE email = ? ${activeFilter}`,
       [email]
     );
 
-    const user = result.rows[0];
+    const user = result[0];
     
     if (!user) {
       console.log('Usuario no encontrado o inactivo:', email);
@@ -97,16 +97,16 @@ router.get('/debug/user/:email', async (req, res) => {
   try {
     const { email } = req.params;
     const pool = getDB();
-    const result = await pool.query(
-      'SELECT id, name, email, role, active, "reportsTo" FROM users WHERE email = $1',
+    const [result] = await pool.query(
+      'SELECT id, name, email, role, active, reportsTo FROM users WHERE email = ?',
       [email]
     );
     
-    if (result.rows.length === 0) {
+    if (result.length === 0) {
       return res.json({ error: 'Usuario no encontrado' });
     }
     
-    res.json(result.rows[0]);
+    res.json(result[0]);
   } catch (error) {
     console.error('Debug error:', error);
     res.status(500).json({ error: error.message });
