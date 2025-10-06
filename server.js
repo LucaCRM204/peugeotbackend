@@ -12,7 +12,7 @@ const userRoutes = require('./routes/users');
 const leadRoutes = require('./routes/leads');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 8080;
 app.set('trust proxy', 1);
 // Rate limiting
 const limiter = rateLimit({
@@ -21,7 +21,7 @@ const limiter = rateLimit({
 });
 
 // Middleware
-app.use(limiter);
+// app.use(limiter);
 app.use(helmet());
 app.use(compression());
 app.use(morgan('combined'));
@@ -47,8 +47,9 @@ app.get('/api/health', (req, res) => {
 });
 
 // Initialize database and start server
+// Initialize database and start server
 initDatabase().then(() => {
-  app.listen(PORT, () => {
+  app.listen(PORT, '0.0.0.0', () => {
     console.log(`Peugeot CRM API running on port ${PORT}`);
   });
 }).catch(err => {
