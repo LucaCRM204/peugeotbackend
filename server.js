@@ -10,14 +10,22 @@ const { initDatabase } = require('./config/database');
 const authRoutes = require('./routes/auth');
 const userRoutes = require('./routes/users');
 const leadRoutes = require('./routes/leads');
+const webhookRoutes = require('./routes/webhook'); // NUEVO
 
 const app = express();
 const PORT = process.env.PORT || 8080;
 app.set('trust proxy', 1);
+
 // Rate limiting
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
   max: 100 // limit each IP to 100 requests per windowMs
+});
+
+// Rate limiting más permisivo para webhooks
+const webhookLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 300 // Más solicitudes permitidas para webhooks
 });
 
 // Middleware
@@ -36,6 +44,7 @@ app.use(express.urlencoded({ extended: true }));
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/leads', leadRoutes);
+app.use('/api/webhook', webhookLimiter, webhookRoutes); // NUEVO - con rate limit especial
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -47,10 +56,10 @@ app.get('/api/health', (req, res) => {
 });
 
 // Initialize database and start server
-// Initialize database and start server
 initDatabase().then(() => {
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Peugeot CRM API running on port ${PORT}`);
+    console.log(`Webhook endpoint: http://localhost:${PORT}/api/webhook/zapier/meta-lead`);
   });
 }).catch(err => {
   console.error('Failed to initialize database:', err);

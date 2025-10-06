@@ -3,20 +3,62 @@ const { getDB } = require('../config/database');
 
 const router = express.Router();
 
-router.post('/facebook-lead', async (req, res) => {
+// Webhook para recibir leads desde Zapier (Meta/Facebook)
+router.post('/zapier/meta-lead', async (req, res) => {
   try {
     const {
-      nombre, telefono, email, modelo,
-      utm_source, utm_campaign, form_id, ad_id,
-      zapier_secret
+      nombre,
+      telefono,
+      email,
+      modelo,
+      formaPago,
+      presupuesto,
+      infoUsado,
+      entrega,
+      fuente,
+      vendedor,
+      notas,
+      // Campos adicionales que puede enviar Meta
+      full_name,
+      phone_number,
+      email_address,
+      vehicle_model,
+      budget,
+      trade_in_info,
+      additional_info
     } = req.body;
 
-    if (zapier_secret !== process.env.ZAPIER_SECRET) {
-      return res.status(401).json({ error: 'Unauthorized' });
+    // Mapear campos de Meta a tu estructura
+    const leadData = {
+      nombre: nombre || full_name || 'Sin nombre',
+      telefono: telefono || phone_number || 'Sin teléfono',
+      email: email || email_address || null,
+      modelo: modelo || vehicle_model || 'No especificado',
+      formaPago: formaPago || 'Contado',
+      presupuesto: presupuesto || budget || null,
+      infoUsado: infoUsado || trade_in_info || null,
+      entrega: entrega ? 1 : 0,
+      fecha: new Date().toISOString().split('T')[0],
+      fuente: fuente || 'meta', // Identificar que viene de Meta
+      vendedor: vendedor || null,
+      notas: notas || additional_info || 'Lead recibido desde Meta vía Zapier',
+      estado: 'nuevo',
+      created_by: 1 // ID del usuario sistema (ajustar según tu configuración)
+    };
+
+    // Validar campos obligatorios
+    if (!leadData.nombre || leadData.nombre === 'Sin nombre') {
+      return res.status(400).json({ 
+        success: false,
+        error: 'El nombre es obligatorio' 
+      });
     }
 
-    if (!nombre || !telefono) {
-      return res.status(400).json({ error: 'Nombre y teléfono son obligatorios' });
+    if (!leadData.telefono || leadData.telefono === 'Sin teléfono') {
+      return res.status(400).json({ 
+        success: false,
+        error: 'El teléfono es obligatorio' 
+      });
     }
 
     const pool = getDB();
@@ -25,78 +67,79 @@ router.post('/facebook-lead', async (req, res) => {
     try {
       await connection.beginTransaction();
 
-      const [vendedoresResult] = await connection.query(`
-        SELECT id FROM users 
-        WHERE role = 'vendedor' AND active = 1 
-        ORDER BY id
-      `);
-
-      const vendedores = vendedoresResult;
-      let vendedorId = null;
-
-      if (vendedores.length > 0) {
-        const [lastLeadResult] = await connection.query(
-          'SELECT vendedor FROM leads ORDER BY id DESC LIMIT 1'
-        );
-        
-        if (lastLeadResult.length > 0 && lastLeadResult[0].vendedor) {
-          const lastVendedorId = lastLeadResult[0].vendedor;
-          const currentIndex = vendedores.findIndex(v => v.id === lastVendedorId);
-          const nextIndex = (currentIndex + 1) % vendedores.length;
-          vendedorId = vendedores[nextIndex].id;
-        } else {
-          vendedorId = vendedores[0].id;
-        }
-      }
-
-      const [result] = await connection.query(`
+      // Insertar el lead
+      const [leadResult] = await connection.query(`
         INSERT INTO leads (
-          nombre, telefono, email, modelo, fuente, vendedor, 
-          notas, estado, createdAt
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())
+          nombre, telefono, email, modelo, formaPago, presupuesto,
+          infoUsado, entrega, fecha, fuente, vendedor, notas, estado, created_by
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `, [
-        nombre, telefono, email || null,
-        modelo || 'Consulta general', 'meta', vendedorId,
-        `Campaña: ${utm_campaign || 'N/A'}\nForm ID: ${form_id || 'N/A'}\nAd ID: ${ad_id || 'N/A'}`,
-        'nuevo'
+        leadData.nombre,
+        leadData.telefono,
+        leadData.email,
+        leadData.modelo,
+        leadData.formaPago,
+        leadData.presupuesto,
+        leadData.infoUsado,
+        leadData.entrega,
+        leadData.fecha,
+        leadData.fuente,
+        leadData.vendedor,
+        leadData.notas,
+        leadData.estado,
+        leadData.created_by
       ]);
 
-      const leadId = result.insertId;
+      const leadId = leadResult.insertId;
 
+      // Registrar en historial
       await connection.query(
         'INSERT INTO lead_history (leadId, estado, usuario) VALUES (?, ?, ?)',
-        [leadId, 'nuevo', 'Sistema - Facebook']
+        [leadId, 'nuevo', 'Sistema Zapier']
       );
+
+      // Obtener el lead creado con toda la información
+      const [createdLead] = await connection.query(`
+        SELECT l.*, u.name as vendedorNombre 
+        FROM leads l 
+        LEFT JOIN users u ON l.vendedor = u.id 
+        WHERE l.id = ?
+      `, [leadId]);
 
       await connection.commit();
 
       res.status(201).json({
-        ok: true,
-        leadId,
-        mensaje: 'Lead creado exitosamente',
-        vendedorAsignado: vendedorId
+        success: true,
+        message: 'Lead creado exitosamente desde Meta',
+        lead: createdLead[0],
+        leadId: leadId
       });
 
     } catch (err) {
       await connection.rollback();
-      throw err;
+      console.error('Error al crear lead desde Zapier:', err);
+      res.status(500).json({ 
+        success: false,
+        error: 'Error al crear lead en la base de datos' 
+      });
     } finally {
       connection.release();
     }
 
-  } catch (error) {
-    console.error('Error en webhook:', error);
+  } catch (err) {
+    console.error('Error en webhook de Zapier:', err);
     res.status(500).json({ 
-      error: 'Error al procesar lead',
-      detalle: error.message 
+      success: false,
+      error: 'Error interno del servidor' 
     });
   }
 });
 
-router.get('/facebook-lead', (req, res) => {
-  res.json({ 
-    status: 'active',
-    message: 'Webhook funcionando',
+// Endpoint de verificación (útil para testing)
+router.get('/zapier/test', (req, res) => {
+  res.json({
+    success: true,
+    message: 'Webhook endpoint está funcionando',
     timestamp: new Date().toISOString()
   });
 });
