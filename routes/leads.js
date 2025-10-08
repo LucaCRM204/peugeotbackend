@@ -12,7 +12,7 @@ router.get('/', authenticateToken, async (req, res) => {
       SELECT l.*, u.name as vendedorNombre 
       FROM leads l 
       LEFT JOIN users u ON l.vendedor = u.id 
-      ORDER BY l.created_at DESC
+      ORDER BY l.createdAt DESC
     `);
     
     console.log(`✅ Devolviendo ${result.length} leads`);
