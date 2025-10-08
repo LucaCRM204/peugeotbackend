@@ -67,8 +67,8 @@ app.use(express.urlencoded({ extended: true }));
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/leads', leadRoutes);
+app.use('/api/presupuestos', presupuestosRoutes);  // ← NUEVO
 app.use('/api/webhook', webhookLimiter, webhookRoutes);
-
 // Health check
 app.get('/api/health', (req, res) => {
   res.json({ 
