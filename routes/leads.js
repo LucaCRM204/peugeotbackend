@@ -12,8 +12,10 @@ router.get('/', authenticateToken, async (req, res) => {
       SELECT l.*, u.name as vendedorNombre 
       FROM leads l 
       LEFT JOIN users u ON l.vendedor = u.id 
-      ORDER BY l.createdAt DESC
+      ORDER BY l.created_at DESC
     `);
+    
+    console.log(`✅ Devolviendo ${result.length} leads`);
     res.json(result);
   } catch (err) {
     console.error('Database error:', err);
