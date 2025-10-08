@@ -10,6 +10,8 @@ const authRoutes = require('./routes/auth');
 const userRoutes = require('./routes/users');
 const leadRoutes = require('./routes/leads');
 const webhookRoutes = require('./routes/webhook');
+const presupuestosRoutes = require('./routes/presupuestos');  // ← AGREGADO
+
 const app = express();
 const PORT = process.env.PORT || 8080;
 
@@ -67,8 +69,9 @@ app.use(express.urlencoded({ extended: true }));
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/leads', leadRoutes);
-app.use('/api/presupuestos', presupuestosRoutes);  // ← NUEVO
+app.use('/api/presupuestos', presupuestosRoutes);  // ← AGREGADO
 app.use('/api/webhook', webhookLimiter, webhookRoutes);
+
 // Health check
 app.get('/api/health', (req, res) => {
   res.json({ 
