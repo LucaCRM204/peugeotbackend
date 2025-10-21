@@ -1,307 +1,248 @@
-const router = require('express').Router();
-const pool = require('../db');
-const { authenticateToken } = require('../middleware/auth');
+const express = require('express');
+const { getDB } = require('../config/database');
+const { authenticateToken, authorizeRoles } = require('../middleware/auth');
 
-// Función para obtener equipo del usuario basado en jerarquía
-async function getUserTeam(userId) {
-  try {
-    const [users] = await pool.execute('SELECT * FROM users');
-    const userMap = new Map(users.map(u => [u.id, u]));
-    
-    let currentUser = userMap.get(userId);
-    if (!currentUser) return 'roberto';
-    
-    if (['owner', 'director'].includes(currentUser.role)) {
-      return 'both';
-    }
-    
-    while (currentUser && currentUser.reportsTo) {
-      currentUser = userMap.get(currentUser.reportsTo);
-      if (!currentUser) break;
-      
-      if (currentUser.role === 'gerente') {
-        if (currentUser.name === 'Daniel Mottino') return 'daniel';
-        if (currentUser.name === 'Roberto Sauer') return 'roberto';
-      }
-    }
-    
-    return 'roberto';
-  } catch (error) {
-    console.error('Error getUserTeam:', error);
-    return 'roberto';
-  }
-}
+const router = express.Router();
 
-// Función para verificar permisos de eliminación
-async function canDeleteLead(userId) {
-  try {
-    const [users] = await pool.execute('SELECT role FROM users WHERE id = ?', [userId]);
-    if (users.length === 0) return false;
-    
-    const userRole = users[0].role;
-    return ['owner', 'dueño'].includes(userRole);
-  } catch (error) {
-    console.error('Error checking delete permissions:', error);
-    return false;
-  }
-}
-
-// GET todos los leads
+// Obtener todos los leads
 router.get('/', authenticateToken, async (req, res) => {
   try {
-    const [leads] = await pool.execute('SELECT * FROM leads ORDER BY last_status_change DESC');
-    res.json({ ok: true, leads });
-  } catch (error) {
-    console.error('Error GET /leads:', error);
+    const pool = getDB();
+    const [result] = await pool.query(`
+      SELECT l.*, u.name as vendedorNombre 
+      FROM leads l 
+      LEFT JOIN users u ON l.vendedor = u.id 
+      ORDER BY l.createdAt DESC
+    `);
+    
+    console.log(`✅ Devolviendo ${result.length} leads`);
+    res.json(result);
+  } catch (err) {
+    console.error('Database error:', err);
     res.status(500).json({ error: 'Error al obtener leads' });
   }
 });
 
-// GET un lead
-router.get('/:id', authenticateToken, async (req, res) => {
-  try {
-    const userTeam = await getUserTeam(req.user.userId);
-    
-    let query = 'SELECT * FROM leads WHERE id = ?';
-    let params = [req.params.id];
-    
-    if (userTeam !== 'both') {
-      query += ' AND equipo = ?';
-      params.push(userTeam);
-    }
-    
-    const [leads] = await pool.execute(query, params);
-    if (leads.length === 0) {
-      return res.status(404).json({ error: 'Lead no encontrado' });
-    }
-    res.json({ ok: true, lead: leads[0] });
-  } catch (error) {
-    console.error('Error GET /leads/:id:', error);
-    res.status(500).json({ error: 'Error al obtener lead' });
-  }
-});
-
-// POST crear lead
+// Crear lead
 router.post('/', authenticateToken, async (req, res) => {
+  const {
+    nombre, telefono, email, modelo, formaPago, presupuesto,
+    infoUsado, entrega, fecha, fuente, vendedor, notas
+  } = req.body;
+
+  if (!nombre || !telefono || !modelo) {
+    return res.status(400).json({ error: 'Nombre, teléfono y modelo son obligatorios' });
+  }
+
+  const pool = getDB();
+  const connection = await pool.getConnection();
+
   try {
-    const {
-      nombre,
-      telefono,
-      modelo,
-      formaPago = 'Contado',
-      infoUsado = '',
-      entrega = false,
-      fecha = new Date().toISOString().split('T')[0],
-      estado = 'nuevo',
-      fuente = 'otro',
-      notas = '',
-      vendedor = null,
-      equipo = 'roberto'
-    } = req.body;
+    await connection.beginTransaction();
 
-    if (!['roberto', 'daniel'].includes(equipo)) {
-      return res.status(400).json({ error: 'Equipo inválido. Debe ser "roberto" o "daniel"' });
-    }
+    const [leadResult] = await connection.query(`
+      INSERT INTO leads (
+        nombre, telefono, email, modelo, formaPago, presupuesto,
+        infoUsado, entrega, fecha, fuente, vendedor, notas, estado, created_by
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [
+      nombre, 
+      telefono, 
+      email || null, 
+      modelo, 
+      formaPago || 'Contado', 
+      presupuesto || null,
+      infoUsado || null, 
+      entrega ? 1 : 0, 
+      fecha || new Date().toISOString().split('T')[0], 
+      fuente || 'otro', 
+      vendedor || null, 
+      notas || '', 
+      'nuevo',
+      req.user.id
+    ]);
 
-    let notasCompletas = notas;
-    if (infoUsado) {
-      notasCompletas += `\nInfo usado: ${infoUsado}`;
-    }
-    if (entrega) {
-      notasCompletas += `\nEntrega usado: Si`;
-    }
+    const leadId = leadResult.insertId;
 
-    let assigned_to = vendedor;
-    if (!assigned_to) {
-      const [vendedoresResult] = await pool.execute(`
-        SELECT u.id 
-        FROM users u
-        WHERE u.role = 'vendedor' 
-        AND u.active = 1
-        AND EXISTS (
-          SELECT 1 FROM users gerente 
-          WHERE gerente.role = 'gerente' 
-          AND gerente.name = ?
-          AND (
-            u.reportsTo IN (
-              SELECT supervisor.id FROM users supervisor 
-              WHERE supervisor.role = 'supervisor' 
-              AND supervisor.reportsTo = gerente.id
-            )
-          )
-        )
-      `, [equipo === 'daniel' ? 'Daniel Mottino' : 'Roberto Sauer']);
-      
-      if (vendedoresResult.length > 0) {
-        const randomIndex = Math.floor(Math.random() * vendedoresResult.length);
-        assigned_to = vendedoresResult[randomIndex].id;
-      }
-    }
-
-    const created_by = req.user.userId;
-
-    const [result] = await pool.execute(
-      `INSERT INTO leads (nombre, telefono, modelo, formaPago, estado, fuente, notas, assigned_to, equipo, created_by, created_at, last_status_change) 
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
-      [nombre, telefono, modelo, formaPago, estado, fuente, notasCompletas, assigned_to, equipo, created_by]
+    await connection.query(
+      'INSERT INTO lead_history (leadId, estado, usuario) VALUES (?, ?, ?)',
+      [leadId, 'nuevo', req.user.name]
     );
 
-    const [newLead] = await pool.execute('SELECT * FROM leads WHERE id = ?', [result.insertId]);
-    res.json({ ok: true, lead: newLead[0] });
-  } catch (error) {
-    console.error('Error POST /leads:', error);
+    const [createdLead] = await connection.query(`
+      SELECT l.*, u.name as vendedorNombre 
+      FROM leads l 
+      LEFT JOIN users u ON l.vendedor = u.id 
+      WHERE l.id = ?
+    `, [leadId]);
+
+    await connection.commit();
+    res.status(201).json(createdLead[0]);
+  } catch (err) {
+    await connection.rollback();
+    console.error('Database error:', err);
     res.status(500).json({ error: 'Error al crear lead' });
+  } finally {
+    connection.release();
   }
 });
 
-// PUT actualizar lead
+// Actualizar lead
 router.put('/:id', authenticateToken, async (req, res) => {
+  const { id } = req.params;
+  const updateData = req.body;
+
+  const pool = getDB();
+  const connection = await pool.getConnection();
+
   try {
-    const { id } = req.params;
-    const updates = req.body;
-    
-    const [currentUserData] = await pool.execute('SELECT role FROM users WHERE id = ?', [req.user.userId]);
-    const userRole = currentUserData[0]?.role;
-    
-    if (!['vendedor'].includes(userRole)) {
-      const userTeam = await getUserTeam(req.user.userId);
-      if (userTeam !== 'both') {
-        const [existingLead] = await pool.execute('SELECT equipo FROM leads WHERE id = ?', [id]);
-        if (existingLead.length === 0) {
-          return res.status(404).json({ error: 'Lead no encontrado' });
-        }
-        if (existingLead[0].equipo !== userTeam) {
-          return res.status(403).json({ error: 'No tienes acceso a este lead' });
-        }
-      }
-    } else {
-      const [existingLead] = await pool.execute('SELECT assigned_to FROM leads WHERE id = ?', [id]);
-      if (existingLead.length === 0) {
-        return res.status(404).json({ error: 'Lead no encontrado' });
-      }
-      if (existingLead[0].assigned_to !== req.user.userId) {
-        return res.status(403).json({ error: 'No tienes acceso a este lead' });
-      }
-    }
-    
-    // ✅ AGREGADO 'fecha' a los campos permitidos
-    const allowedFields = ['nombre', 'telefono', 'modelo', 'formaPago', 'estado', 'fuente', 'notas', 'assigned_to', 'vendedor', 'equipo', 'fecha'];
-    
-    const setClause = [];
-    const values = [];
-    let isUpdatingStatus = false;
-    
-    for (const [key, value] of Object.entries(updates)) {
-      const fieldName = key === 'vendedor' ? 'assigned_to' : key;
-      
-      if (allowedFields.includes(key)) {
-        if (key === 'equipo' && !['roberto', 'daniel'].includes(value)) {
-          return res.status(400).json({ error: 'Equipo inválido' });
-        }
-        
-        if (key === 'estado') {
-          isUpdatingStatus = true;
-        }
-        
-        setClause.push(`${fieldName} = ?`);
-        values.push(value === undefined ? null : value);
-      }
-    }
-    
-    if (isUpdatingStatus) {
-      setClause.push('last_status_change = NOW()');
-    }
-    
-    if (setClause.length === 0) {
-      return res.status(400).json({ error: 'No hay campos para actualizar' });
-    }
-    
-    values.push(id);
-    
-    await pool.execute(
-      `UPDATE leads SET ${setClause.join(', ')} WHERE id = ?`,
-      values
-    );
-    
-    const [updated] = await pool.execute('SELECT * FROM leads WHERE id = ?', [id]);
-    res.json({ ok: true, lead: updated[0] });
-  } catch (error) {
-    console.error('Error PUT /leads/:id:', error);
-    res.status(500).json({ error: 'Error al actualizar lead' });
-  }
-});
+    await connection.beginTransaction();
 
-// DELETE eliminar lead
-router.delete('/:id', authenticateToken, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const userId = req.user.userId;
-
-    const hasDeletePermission = await canDeleteLead(userId);
-    if (!hasDeletePermission) {
-      return res.status(403).json({ 
-        error: 'No tienes permisos para eliminar leads. Solo el Dueño puede realizar esta acción.'
-      });
-    }
-
-    const [existingLead] = await pool.execute('SELECT * FROM leads WHERE id = ?', [id]);
-    if (existingLead.length === 0) {
+    const [currentLeadResult] = await connection.query('SELECT * FROM leads WHERE id = ?', [id]);
+    
+    if (currentLeadResult.length === 0) {
+      await connection.rollback();
       return res.status(404).json({ error: 'Lead no encontrado' });
     }
 
-    const userTeam = await getUserTeam(userId);
-    if (userTeam !== 'both') {
-      if (existingLead[0].equipo !== userTeam) {
-        return res.status(403).json({ error: 'No tienes acceso a este lead' });
-      }
+    const currentLead = currentLeadResult[0];
+
+    const finalData = {
+      nombre: updateData.nombre !== undefined ? updateData.nombre : currentLead.nombre,
+      telefono: updateData.telefono !== undefined ? updateData.telefono : currentLead.telefono,
+      email: updateData.email !== undefined ? updateData.email : currentLead.email,
+      modelo: updateData.modelo !== undefined ? updateData.modelo : currentLead.modelo,
+      formaPago: updateData.formaPago !== undefined ? updateData.formaPago : currentLead.formaPago,
+      presupuesto: updateData.presupuesto !== undefined ? updateData.presupuesto : currentLead.presupuesto,
+      infoUsado: updateData.infoUsado !== undefined ? updateData.infoUsado : currentLead.infoUsado,
+      entrega: updateData.entrega !== undefined ? (updateData.entrega ? 1 : 0) : currentLead.entrega,
+      fecha: updateData.fecha !== undefined ? updateData.fecha : currentLead.fecha,
+      fuente: updateData.fuente !== undefined ? updateData.fuente : currentLead.fuente,
+      vendedor: updateData.vendedor !== undefined ? updateData.vendedor : currentLead.vendedor,
+      notas: updateData.notas !== undefined ? updateData.notas : currentLead.notas,
+      estado: updateData.estado !== undefined ? updateData.estado : currentLead.estado
+    };
+
+    if (updateData.estado && currentLead.estado !== updateData.estado) {
+      await connection.query(
+        'INSERT INTO lead_history (leadId, estado, usuario) VALUES (?, ?, ?)',
+        [id, updateData.estado, req.user.name]
+      );
     }
 
-    const leadInfo = existingLead[0];
+    await connection.query(`
+      UPDATE leads SET 
+        nombre = ?, telefono = ?, email = ?, modelo = ?, formaPago = ?, 
+        presupuesto = ?, infoUsado = ?, entrega = ?, fecha = ?, 
+        fuente = ?, vendedor = ?, notas = ?, estado = ?
+      WHERE id = ?
+    `, [
+      finalData.nombre, finalData.telefono, finalData.email, finalData.modelo,
+      finalData.formaPago, finalData.presupuesto, finalData.infoUsado, finalData.entrega,
+      finalData.fecha, finalData.fuente, finalData.vendedor, finalData.notas,
+      finalData.estado, id
+    ]);
+
+    const [updatedLead] = await connection.query(`
+      SELECT l.*, u.name as vendedorNombre 
+      FROM leads l 
+      LEFT JOIN users u ON l.vendedor = u.id 
+      WHERE l.id = ?
+    `, [id]);
+
+    await connection.commit();
+    res.json(updatedLead[0]);
+  } catch (err) {
+    await connection.rollback();
+    console.error('Database error:', err);
+    res.status(500).json({ error: 'Error al actualizar lead' });
+  } finally {
+    connection.release();
+  }
+});
+
+// Eliminar lead individual
+router.delete('/:id', authenticateToken, async (req, res) => {
+  const { id } = req.params;
+  const pool = getDB();
+  const connection = await pool.getConnection();
+
+  try {
+    await connection.beginTransaction();
+    await connection.query('DELETE FROM lead_history WHERE leadId = ?', [id]);
+    await connection.query('DELETE FROM leads WHERE id = ?', [id]);
+    await connection.commit();
+    res.json({ ok: true, message: 'Lead eliminado correctamente' });
+  } catch (err) {
+    await connection.rollback();
+    console.error('Database error:', err);
+    res.status(500).json({ error: 'Error al eliminar lead' });
+  } finally {
+    connection.release();
+  }
+});
+
+// BORRADO MASIVO - SOLO OWNER
+router.delete('/bulk/delete-all', authenticateToken, authorizeRoles('owner'), async (req, res) => {
+  const { confirmPassword } = req.body;
+
+  if (!confirmPassword) {
+    return res.status(400).json({ error: 'Se requiere confirmar con contraseña' });
+  }
+
+  const pool = getDB();
+  const connection = await pool.getConnection();
+
+  try {
+    const bcrypt = require('bcryptjs');
+    const [userResult] = await connection.query('SELECT * FROM users WHERE id = ?', [req.user.id]);
     
-    await pool.execute('DELETE FROM leads WHERE id = ?', [id]);
-    
-    console.log(`Lead eliminado por usuario ${userId}:`, {
-      leadId: id,
-      cliente: leadInfo.nombre,
-      telefono: leadInfo.telefono,
-      modelo: leadInfo.modelo,
-      vendedor: leadInfo.assigned_to,
-      equipo: leadInfo.equipo,
-      timestamp: new Date().toISOString()
-    });
+    if (userResult.length === 0) {
+      return res.status(404).json({ error: 'Usuario no encontrado' });
+    }
+
+    const validPassword = await bcrypt.compare(confirmPassword, userResult[0].password);
+    if (!validPassword) {
+      return res.status(401).json({ error: 'Contraseña incorrecta' });
+    }
+
+    await connection.beginTransaction();
+
+    const [countResult] = await connection.query('SELECT COUNT(*) as total FROM leads');
+    const totalLeads = parseInt(countResult[0].total);
+
+    await connection.query('DELETE FROM lead_history');
+    await connection.query('DELETE FROM leads');
+
+    await connection.commit();
 
     res.json({ 
       ok: true, 
-      message: 'Lead eliminado exitosamente',
-      deletedLead: {
-        id: leadInfo.id,
-        nombre: leadInfo.nombre,
-        telefono: leadInfo.telefono,
-        modelo: leadInfo.modelo
-      }
+      message: `${totalLeads} leads eliminados correctamente`,
+      deletedCount: totalLeads
     });
-  } catch (error) {
-    console.error('Error DELETE /leads/:id:', error);
-    res.status(500).json({ error: 'Error al eliminar lead' });
+  } catch (err) {
+    await connection.rollback();
+    console.error('Database error:', err);
+    res.status(500).json({ error: 'Error al eliminar leads masivamente' });
+  } finally {
+    connection.release();
   }
 });
 
-// Endpoint webhook
-router.post('/webhook/:equipo', authenticateToken, async (req, res) => {
+// Obtener historial de un lead
+router.get('/:id/history', authenticateToken, async (req, res) => {
+  const { id } = req.params;
   try {
-    const equipoFromUrl = req.params.equipo;
-    
-    if (!['roberto', 'daniel'].includes(equipoFromUrl)) {
-      return res.status(400).json({ error: 'Equipo inválido en URL' });
-    }
-    
-    const leadData = { ...req.body, equipo: equipoFromUrl };
-    
-    req.body = leadData;
-    return router.handle(req, res, 'post', '/');
-  } catch (error) {
-    console.error('Error POST /leads/webhook/:equipo:', error);
-    res.status(500).json({ error: 'Error al crear lead desde webhook' });
+    const pool = getDB();
+    const [result] = await pool.query(
+      'SELECT * FROM lead_history WHERE leadId = ? ORDER BY timestamp DESC',
+      [id]
+    );
+    res.json(result);
+  } catch (err) {
+    console.error('Database error:', err);
+    res.status(500).json({ error: 'Error al obtener historial' });
   }
 });
 
